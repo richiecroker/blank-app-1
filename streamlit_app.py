@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import time
 
 st.set_page_config(page_title="Screwfix Stock Checker", layout="wide")
 st.title("Screwfix Stock Checker")
@@ -15,6 +16,7 @@ SEARCH_LOCATIONS = [
 
 BASE_URL = "https://www.screwfix.com/prod/ffx-browse-bff/v1/SFXUK/stock/search"
 AUTH_TOKEN = "eyJvcmciOiI2MGFlMTA0ZGVjM2M1ZjAwMDFkMjYxYTkiLCJpZCI6IjU3OTZiYWJkMmUwMDQ0Zjc4ODJjZDgwYWM3YWY5ZmMxIiwiaCI6Im11cm11cjEyOCJ9"
+POLL_INTERVAL = 15 * 60  # 15 minutes in seconds
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -52,33 +54,18 @@ def fetch_stock(session, product_code, lat, long):
     return r.json()
 
 
-with st.sidebar:
-    st.header("Products")
-    products_input = st.text_area("Product codes (one per line)", value="\n".join(PRODUCT_CODES))
-    run = st.button("Check stock", type="primary", use_container_width=True)
-    if st.button("Clear session", use_container_width=True):
-        st.cache_resource.clear()
-        st.success("Session cleared.")
-
-product_codes = [p.strip().upper() for p in products_input.splitlines() if p.strip()]
-
-if run:
+def run_check():
     rows = []
-    seen_stores = set()  # deduplicate stores that appear in both location searches
+    seen_stores = set()
 
     try:
         session = get_session()
     except Exception as e:
         st.error(f"Failed to initialise session: {e}")
-        st.stop()
-
-    total = len(SEARCH_LOCATIONS) * len(product_codes)
-    progress = st.progress(0, text="Starting...")
-    n = 0
+        return None
 
     for location in SEARCH_LOCATIONS:
-        for product in product_codes:
-            progress.progress(n / total, text=f"{location['name']} — {product}")
+        for product in PRODUCT_CODES:
             try:
                 data = fetch_stock(session, product, location["lat"], location["long"])
                 for store_entry in data.get("nearestStores", []):
@@ -95,24 +82,58 @@ if run:
                         rows.append({
                             "Product": product,
                             "Store": store_name,
-                            "BranchCode": branch_code,
                             "Stock": p["branchStock"],
                         })
             except Exception as e:
                 st.warning(f"{location['name']} / {product}: {e}")
-            n += 1
 
-    progress.empty()
+    if not rows:
+        return None
 
-    if rows:
-        df = pd.DataFrame(rows)
-        pivot = df.pivot_table(index="Store", columns="Product", values="Stock", aggfunc="first")
-        pivot.columns.name = None
-        pivot = pivot.sort_index()
+    df = pd.DataFrame(rows)
+    pivot = df.pivot_table(index="Store", columns="Product", values="Stock", aggfunc="first")
+    pivot.columns.name = None
+    return pivot.sort_index()
 
-        st.subheader(f"Stock levels — {datetime.now().strftime('%H:%M:%S')}")
-        st.dataframe(pivot, use_container_width=True)
-    else:
-        st.warning("No data returned.")
+
+# --- sidebar ---
+with st.sidebar:
+    if st.button("Clear session", use_container_width=True):
+        st.cache_resource.clear()
+        st.success("Session cleared.")
+    st.caption(f"Auto-refreshes every 15 minutes.")
+
+# --- init state ---
+if "last_check" not in st.session_state:
+    st.session_state.last_check = None
+if "last_df" not in st.session_state:
+    st.session_state.last_df = None
+
+# --- check if due ---
+now = time.time()
+due = (
+    st.session_state.last_check is None
+    or (now - st.session_state.last_check) >= POLL_INTERVAL
+)
+
+if due:
+    with st.spinner("Fetching stock..."):
+        df = run_check()
+    st.session_state.last_check = time.time()
+    st.session_state.last_df = df
+
+# --- display ---
+if st.session_state.last_df is not None:
+    checked_at = datetime.fromtimestamp(st.session_state.last_check).strftime("%H:%M:%S")
+    next_check = datetime.fromtimestamp(st.session_state.last_check + POLL_INTERVAL).strftime("%H:%M:%S")
+    st.caption(f"Last checked: {checked_at} · Next check: {next_check}")
+    st.dataframe(st.session_state.last_df, use_container_width=True)
 else:
-    st.info("Click **Check stock** to fetch current levels.")
+    st.warning("No data returned.")
+
+# --- schedule next refresh ---
+if st.session_state.last_check is not None:
+    seconds_until_next = int((st.session_state.last_check + POLL_INTERVAL) - time.time())
+    if seconds_until_next > 0:
+        time.sleep(seconds_until_next)
+    st.rerun()
