@@ -3,10 +3,13 @@ import requests
 import pandas as pd
 from datetime import datetime
 import time
-import smtplib
 import re
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import json
+
+# Email imports left commented out for now
+# import smtplib
+# from email.mime.text import MIMEText
+# from email.mime.multipart import MIMEMultipart
 
 st.set_page_config(page_title="Screwfix Stock Checker", layout="wide")
 st.title("Screwfix Stock Checker")
@@ -22,9 +25,10 @@ BASE_URL = "https://www.screwfix.com/prod/ffx-browse-bff/v1/SFXUK/stock/search"
 AUTH_TOKEN = "eyJvcmciOiI2MGFlMTA0ZGVjM2M1ZjAwMDFkMjYxYTkiLCJpZCI6IjU3OTZiYWJkMmUwMDQ0Zjc4ODJjZDgwYWM3YWY5ZmMxIiwiaCI6Im11cm11cjEyOCJ9"
 POLL_INTERVAL = 15 * 60
 
-#EMAIL_FROM = "screwfix.checker@gmail.com"
-#EMAIL_TO = "richard@example.com"
-#EMAIL_APP_PASSWORD = st.secrets["email_app_password"]
+# Email settings left commented out for now
+# EMAIL_FROM = "screwfix.checker@gmail.com"
+# EMAIL_TO = "richard@example.com"
+# EMAIL_APP_PASSWORD = st.secrets["email_app_password"]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -45,9 +49,17 @@ def get_session():
 
 
 @st.cache_data(ttl=86400)
-def get_product_descriptions(product_codes):
-    """Fetch product longDescription from Screwfix page JSON, cached for 24hrs."""
-    descriptions = {}
+def get_product_info(product_codes):
+    """
+    Fetch product name and price from Screwfix page JSON-LD, cached for 24 hours.
+    Returns:
+        {
+            "931AX": {"name": "...", "price": 174.99},
+            ...
+        }
+    """
+    info = {}
+
     for code in product_codes:
         try:
             r = requests.get(
@@ -56,14 +68,71 @@ def get_product_descriptions(product_codes):
                 timeout=10,
                 allow_redirects=True,
             )
-            match = re.search(r'"longDescription"\s*:\s*"([^"]+)"', r.text)
-            if match:
-                descriptions[code] = match.group(1).strip()
-            else:
-                descriptions[code] = code
+
+            name = code
+            price = None
+
+            # Grab all JSON-LD scripts and look for the Product object
+            scripts = re.findall(
+                r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+                r.text,
+                re.DOTALL,
+            )
+
+            for script in scripts:
+                script = script.strip()
+                if not script:
+                    continue
+
+                try:
+                    data = json.loads(script)
+                except Exception:
+                    continue
+
+                # Handle either a single object or a list of objects
+                candidates = data if isinstance(data, list) else [data]
+
+                for item in candidates:
+                    if not isinstance(item, dict):
+                        continue
+
+                    if item.get("@type") != "Product":
+                        continue
+
+                    name = item.get("name", code).strip() or code
+
+                    offers = item.get("offers", [])
+                    if isinstance(offers, list) and offers:
+                        first_offer = offers[0]
+                        price_value = first_offer.get("price")
+                        try:
+                            price = float(price_value) if price_value is not None else None
+                        except Exception:
+                            price = None
+                    elif isinstance(offers, dict):
+                        price_value = offers.get("price")
+                        try:
+                            price = float(price_value) if price_value is not None else None
+                        except Exception:
+                            price = None
+
+                    break
+
+                if name != code or price is not None:
+                    break
+
+            info[code] = {
+                "name": name,
+                "price": price,
+            }
+
         except Exception:
-            descriptions[code] = code
-    return descriptions
+            info[code] = {
+                "name": code,
+                "price": None,
+            }
+
+    return info
 
 
 def fetch_stock(session, product_code, lat, long):
@@ -84,28 +153,32 @@ def fetch_stock(session, product_code, lat, long):
     return r.json()
 
 
-def send_alert(changes, descriptions):
-    lines = []
-    for product, store, stock in changes:
-        desc = descriptions.get(product, product)
-        lines.append(f"  {product} — {desc}\n  {store}: {stock} in stock")
-
-    body = "The following items are now in stock at Screwfix:\n\n" + "\n\n".join(lines)
-
-    msg = MIMEMultipart()
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
-    msg.attach(MIMEText(body, "plain"))
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
-            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-        return True
-    except Exception as e:
-        st.warning(f"Email failed: {e}")
-        return False
+# Email alerts commented out for now
+# def send_alert(changes, product_info):
+#     lines = []
+#     for product, store, stock in changes:
+#         item = product_info.get(product, {"name": product, "price": None})
+#         name = item.get("name", product)
+#         price = item.get("price")
+#         price_text = f" (£{price:.2f})" if isinstance(price, (int, float)) else ""
+#         lines.append(f"  {product} — {name}{price_text}\n  {store}: {stock} in stock")
+#
+#     body = "The following items are now in stock at Screwfix:\n\n" + "\n\n".join(lines)
+#
+#     msg = MIMEMultipart()
+#     msg["From"] = EMAIL_FROM
+#     msg["To"] = EMAIL_TO
+#     msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
+#     msg.attach(MIMEText(body, "plain"))
+#
+#     try:
+#         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+#             server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
+#             server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+#         return True
+#     except Exception as e:
+#         st.warning(f"Email failed: {e}")
+#         return False
 
 
 def run_check():
@@ -173,12 +246,15 @@ with st.sidebar:
         for a in st.session_state.alerts_sent:
             st.caption(a)
 
-# --- fetch descriptions ---
-descriptions = get_product_descriptions(tuple(PRODUCT_CODES))
+# --- fetch product info ---
+product_info = get_product_info(tuple(PRODUCT_CODES))
 
-# --- show descriptions ---
-for code, desc in descriptions.items():
-    st.caption(f"**{code}** — {desc}")
+# --- show product info ---
+for code, item in product_info.items():
+    name = item.get("name", code)
+    price = item.get("price")
+    price_text = f"£{price:.2f}" if isinstance(price, (int, float)) else "Price unavailable"
+    st.caption(f"**{code}** — {name} ({price_text})")
 
 st.divider()
 
@@ -203,13 +279,14 @@ if due:
                     changes.append((product, store, stock))
                 st.session_state.prev_stock[(store, product)] = stock
 
-        if changes:
-            sent = send_alert(changes, descriptions)
-            if sent:
-                alert_time = datetime.now().strftime("%H:%M:%S")
-                st.session_state.alerts_sent.append(
-                    f"{alert_time}: {', '.join(f'{p} @ {s}' for p, s, _ in changes)}"
-                )
+        # Email alerts commented out for now
+        # if changes:
+        #     sent = send_alert(changes, product_info)
+        #     if sent:
+        #         alert_time = datetime.now().strftime("%H:%M:%S")
+        #         st.session_state.alerts_sent.append(
+        #             f"{alert_time}: {', '.join(f'{p} @ {s}' for p, s, _ in changes)}"
+        #         )
 
     st.session_state.last_check = time.time()
     st.session_state.last_df = df
@@ -222,8 +299,15 @@ if st.session_state.last_df is not None:
 
     df = st.session_state.last_df.copy()
 
-    # Rename columns to include description
-    df.columns = [f"{c} — {descriptions.get(c, c)}" for c in df.columns]
+    # Rename columns to include name and price
+    def format_column(c):
+        item = product_info.get(c, {"name": c, "price": None})
+        name = item.get("name", c)
+        price = item.get("price")
+        price_text = f"£{price:.2f}" if isinstance(price, (int, float)) else "Price unavailable"
+        return f"{c} — {name} ({price_text})"
+
+    df.columns = [format_column(c) for c in df.columns]
 
     # Sort: stores with any stock > 0 first, then alphabetical
     df["_total"] = df.sum(axis=1)
