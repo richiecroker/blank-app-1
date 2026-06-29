@@ -46,7 +46,7 @@ def get_session():
 
 @st.cache_data(ttl=86400)
 def get_product_descriptions(product_codes):
-    """Fetch product name from Screwfix page title, cached for 24hrs."""
+    """Fetch product longDescription from Screwfix page JSON, cached for 24hrs."""
     descriptions = {}
     for code in product_codes:
         try:
@@ -56,12 +56,9 @@ def get_product_descriptions(product_codes):
                 timeout=10,
                 allow_redirects=True,
             )
-            match = re.search(r"<title>(.*?)(?:\s*[-|].*)?</title>", r.text, re.IGNORECASE)
+            match = re.search(r'"longDescription"\s*:\s*"([^"]+)"', r.text)
             if match:
-                title = match.group(1).strip()
-                # Strip " - Screwfix" suffix if present
-                title = re.sub(r"\s*-\s*Screwfix\s*$", "", title, flags=re.IGNORECASE)
-                descriptions[code] = title
+                descriptions[code] = match.group(1).strip()
             else:
                 descriptions[code] = code
         except Exception:
@@ -95,20 +92,20 @@ def send_alert(changes, descriptions):
 
     body = "The following items are now in stock at Screwfix:\n\n" + "\n\n".join(lines)
 
-    #msg = MIMEMultipart()
-    #msg["From"] = EMAIL_FROM
-    #msg["To"] = EMAIL_TO
-    #msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
-    #msg.attach(MIMEText(body, "plain"))
-#
-    #try:
-    #    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-    #  #      server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
-    #        server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-   #     return True
-   # except Exception as e:
-   #     st.warning(f"Email failed: {e}")
-   #     return False
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_FROM
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
+            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+        return True
+    except Exception as e:
+        st.warning(f"Email failed: {e}")
+        return False
 
 
 def run_check():
