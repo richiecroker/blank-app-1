@@ -194,7 +194,6 @@ def run_check():
                     if key in seen_stores:
                         continue
                     seen_stores.add(key)
-
                     for p in store_entry.get("products", []):
                         if p["skuId"] != product:
                             continue
@@ -210,10 +209,7 @@ def run_check():
         return None
 
     df = pd.DataFrame(rows)
-
-    # Make sure stock is numeric
     df["Stock"] = pd.to_numeric(df["Stock"], errors="coerce").fillna(0)
-
     pivot = df.pivot_table(index="Store", columns="Product", values="Stock", aggfunc="first")
     pivot.columns.name = None
     return pivot
@@ -295,6 +291,17 @@ if st.session_state.last_df is not None:
 
     df = st.session_state.last_df.copy()
 
+    def column_name(code):
+        item = product_info.get(code, {})
+        name = item.get("name", code)
+        price = item.get("price")
+        if price is not None:
+            return f"{code} — {name} (£{price:.2f})"
+        return f"{code} — {name}"
+
+    # Keep the original stock grid and put the name/price in each column header
+    df.columns = [column_name(c) for c in df.columns]
+
     # Sort: stores with any stock > 0 first, then alphabetical
     df["_total"] = df.sum(axis=1)
     df = df.sort_values("_total", ascending=False).drop(columns="_total")
@@ -305,15 +312,6 @@ if st.session_state.last_df is not None:
     height = header_height + row_height * len(df)
 
     st.dataframe(df, use_container_width=True, height=height)
-
-    st.divider()
-    st.subheader("Product details")
-    for code in PRODUCT_CODES:
-        item = product_info.get(code, {"name": code, "price": None})
-        name = item.get("name", code)
-        price = item.get("price")
-        price_text = f"£{price:.2f}" if isinstance(price, (int, float)) else "Price unavailable"
-        st.write(f"**{code}** — {name} — {price_text}")
 else:
     st.warning("No data returned.")
 
