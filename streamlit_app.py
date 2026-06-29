@@ -22,9 +22,9 @@ BASE_URL = "https://www.screwfix.com/prod/ffx-browse-bff/v1/SFXUK/stock/search"
 AUTH_TOKEN = "eyJvcmciOiI2MGFlMTA0ZGVjM2M1ZjAwMDFkMjYxYTkiLCJpZCI6IjU3OTZiYWJkMmUwMDQ0Zjc4ODJjZDgwYWM3YWY5ZmMxIiwiaCI6Im11cm11cjEyOCJ9"
 POLL_INTERVAL = 15 * 60
 
-EMAIL_FROM = "screwfix.checker@gmail.com"
-EMAIL_TO = "richard@example.com"
-EMAIL_APP_PASSWORD = st.secrets["email_app_password"]
+#EMAIL_FROM = "screwfix.checker@gmail.com"
+#EMAIL_TO = "richard@example.com"
+#EMAIL_APP_PASSWORD = st.secrets["email_app_password"]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -95,20 +95,20 @@ def send_alert(changes, descriptions):
 
     body = "The following items are now in stock at Screwfix:\n\n" + "\n\n".join(lines)
 
-    msg = MIMEMultipart()
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
-    msg.attach(MIMEText(body, "plain"))
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
-            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-        return True
-    except Exception as e:
-        st.warning(f"Email failed: {e}")
-        return False
+    #msg = MIMEMultipart()
+    #msg["From"] = EMAIL_FROM
+    #msg["To"] = EMAIL_TO
+    #msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
+    #msg.attach(MIMEText(body, "plain"))
+#
+    #try:
+    #    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    #  #      server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
+    #        server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+   #     return True
+   # except Exception as e:
+   #     st.warning(f"Email failed: {e}")
+   #     return False
 
 
 def run_check():
