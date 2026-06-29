@@ -14,7 +14,7 @@ import json
 st.set_page_config(page_title="Screwfix Stock Checker", layout="wide")
 st.title("Screwfix Stock Checker")
 
-PRODUCT_CODES = ["931AX", "835XG", "730XG", "308PG"]
+PRODUCT_CODES = ["931AX", "835XG", "730XG"]
 
 SEARCH_LOCATIONS = [
     {"name": "Barnstaple area", "lat": 51.0824977, "long": -4.0593129},
