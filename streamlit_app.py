@@ -72,7 +72,6 @@ def get_product_info(product_codes):
             name = code
             price = None
 
-            # Grab all JSON-LD scripts and look for the Product object
             scripts = re.findall(
                 r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
                 r.text,
@@ -89,7 +88,6 @@ def get_product_info(product_codes):
                 except Exception:
                     continue
 
-                # Handle either a single object or a list of objects
                 candidates = data if isinstance(data, list) else [data]
 
                 for item in candidates:
@@ -105,32 +103,25 @@ def get_product_info(product_codes):
                     if isinstance(offers, list) and offers:
                         first_offer = offers[0]
                         price_value = first_offer.get("price")
-                        try:
-                            price = float(price_value) if price_value is not None else None
-                        except Exception:
-                            price = None
                     elif isinstance(offers, dict):
                         price_value = offers.get("price")
-                        try:
-                            price = float(price_value) if price_value is not None else None
-                        except Exception:
-                            price = None
+                    else:
+                        price_value = None
+
+                    try:
+                        price = float(price_value) if price_value is not None else None
+                    except Exception:
+                        price = None
 
                     break
 
                 if name != code or price is not None:
                     break
 
-            info[code] = {
-                "name": name,
-                "price": price,
-            }
+            info[code] = {"name": name, "price": price}
 
         except Exception:
-            info[code] = {
-                "name": code,
-                "price": None,
-            }
+            info[code] = {"name": code, "price": None}
 
     return info
 
@@ -203,6 +194,7 @@ def run_check():
                     if key in seen_stores:
                         continue
                     seen_stores.add(key)
+
                     for p in store_entry.get("products", []):
                         if p["skuId"] != product:
                             continue
@@ -218,6 +210,10 @@ def run_check():
         return None
 
     df = pd.DataFrame(rows)
+
+    # Make sure stock is numeric
+    df["Stock"] = pd.to_numeric(df["Stock"], errors="coerce").fillna(0)
+
     pivot = df.pivot_table(index="Store", columns="Product", values="Stock", aggfunc="first")
     pivot.columns.name = None
     return pivot
@@ -299,16 +295,6 @@ if st.session_state.last_df is not None:
 
     df = st.session_state.last_df.copy()
 
-    # Rename columns to include name and price
-    def format_column(c):
-        item = product_info.get(c, {"name": c, "price": None})
-        name = item.get("name", c)
-        price = item.get("price")
-        price_text = f"£{price:.2f}" if isinstance(price, (int, float)) else "Price unavailable"
-        return f"{c} — {name} ({price_text})"
-
-    df.columns = [format_column(c) for c in df.columns]
-
     # Sort: stores with any stock > 0 first, then alphabetical
     df["_total"] = df.sum(axis=1)
     df = df.sort_values("_total", ascending=False).drop(columns="_total")
@@ -319,6 +305,15 @@ if st.session_state.last_df is not None:
     height = header_height + row_height * len(df)
 
     st.dataframe(df, use_container_width=True, height=height)
+
+    st.divider()
+    st.subheader("Product details")
+    for code in PRODUCT_CODES:
+        item = product_info.get(code, {"name": code, "price": None})
+        name = item.get("name", code)
+        price = item.get("price")
+        price_text = f"£{price:.2f}" if isinstance(price, (int, float)) else "Price unavailable"
+        st.write(f"**{code}** — {name} — {price_text}")
 else:
     st.warning("No data returned.")
 
