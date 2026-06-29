@@ -3,6 +3,10 @@ import requests
 import pandas as pd
 from datetime import datetime
 import time
+import smtplib
+import re
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 st.set_page_config(page_title="Screwfix Stock Checker", layout="wide")
 st.title("Screwfix Stock Checker")
@@ -16,7 +20,11 @@ SEARCH_LOCATIONS = [
 
 BASE_URL = "https://www.screwfix.com/prod/ffx-browse-bff/v1/SFXUK/stock/search"
 AUTH_TOKEN = "eyJvcmciOiI2MGFlMTA0ZGVjM2M1ZjAwMDFkMjYxYTkiLCJpZCI6IjU3OTZiYWJkMmUwMDQ0Zjc4ODJjZDgwYWM3YWY5ZmMxIiwiaCI6Im11cm11cjEyOCJ9"
-POLL_INTERVAL = 15 * 60  # 15 minutes in seconds
+POLL_INTERVAL = 15 * 60
+
+EMAIL_FROM = "screwfix.checker@gmail.com"
+EMAIL_TO = "richard@example.com"
+EMAIL_APP_PASSWORD = st.secrets["email_app_password"]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -36,6 +44,31 @@ def get_session():
     return session
 
 
+@st.cache_data(ttl=86400)
+def get_product_descriptions(product_codes):
+    """Fetch product name from Screwfix page title, cached for 24hrs."""
+    descriptions = {}
+    for code in product_codes:
+        try:
+            r = requests.get(
+                f"https://www.screwfix.com/p/{code.lower()}",
+                headers=HEADERS,
+                timeout=10,
+                allow_redirects=True,
+            )
+            match = re.search(r"<title>(.*?)(?:\s*[-|].*)?</title>", r.text, re.IGNORECASE)
+            if match:
+                title = match.group(1).strip()
+                # Strip " - Screwfix" suffix if present
+                title = re.sub(r"\s*-\s*Screwfix\s*$", "", title, flags=re.IGNORECASE)
+                descriptions[code] = title
+            else:
+                descriptions[code] = code
+        except Exception:
+            descriptions[code] = code
+    return descriptions
+
+
 def fetch_stock(session, product_code, lat, long):
     headers = {
         "accept": "*/*",
@@ -52,6 +85,30 @@ def fetch_stock(session, product_code, lat, long):
     r = session.get(BASE_URL, headers=headers, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
+
+
+def send_alert(changes, descriptions):
+    lines = []
+    for product, store, stock in changes:
+        desc = descriptions.get(product, product)
+        lines.append(f"  {product} — {desc}\n  {store}: {stock} in stock")
+
+    body = "The following items are now in stock at Screwfix:\n\n" + "\n\n".join(lines)
+
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_FROM
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = f"Screwfix stock alert — {len(changes)} item(s) available"
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
+            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+        return True
+    except Exception as e:
+        st.warning(f"Email failed: {e}")
+        return False
 
 
 def run_check():
@@ -93,21 +150,40 @@ def run_check():
     df = pd.DataFrame(rows)
     pivot = df.pivot_table(index="Store", columns="Product", values="Stock", aggfunc="first")
     pivot.columns.name = None
-    return pivot.sort_index()
+    return pivot
 
-
-# --- sidebar ---
-with st.sidebar:
-    if st.button("Clear session", use_container_width=True):
-        st.cache_resource.clear()
-        st.success("Session cleared.")
-    st.caption(f"Auto-refreshes every 15 minutes.")
 
 # --- init state ---
 if "last_check" not in st.session_state:
     st.session_state.last_check = None
 if "last_df" not in st.session_state:
     st.session_state.last_df = None
+if "prev_stock" not in st.session_state:
+    st.session_state.prev_stock = {}
+if "alerts_sent" not in st.session_state:
+    st.session_state.alerts_sent = []
+
+# --- sidebar ---
+with st.sidebar:
+    if st.button("Clear session", use_container_width=True):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.success("Session cleared.")
+    st.caption("Auto-refreshes every 15 minutes.")
+    if st.session_state.alerts_sent:
+        st.divider()
+        st.subheader("Alerts sent")
+        for a in st.session_state.alerts_sent:
+            st.caption(a)
+
+# --- fetch descriptions ---
+descriptions = get_product_descriptions(tuple(PRODUCT_CODES))
+
+# --- show descriptions ---
+for code, desc in descriptions.items():
+    st.caption(f"**{code}** — {desc}")
+
+st.divider()
 
 # --- check if due ---
 now = time.time()
@@ -119,6 +195,25 @@ due = (
 if due:
     with st.spinner("Fetching stock..."):
         df = run_check()
+
+    if df is not None:
+        changes = []
+        for store in df.index:
+            for product in df.columns:
+                stock = df.loc[store, product]
+                prev = st.session_state.prev_stock.get((store, product), 0)
+                if prev == 0 and stock > 0:
+                    changes.append((product, store, stock))
+                st.session_state.prev_stock[(store, product)] = stock
+
+        if changes:
+            sent = send_alert(changes, descriptions)
+            if sent:
+                alert_time = datetime.now().strftime("%H:%M:%S")
+                st.session_state.alerts_sent.append(
+                    f"{alert_time}: {', '.join(f'{p} @ {s}' for p, s, _ in changes)}"
+                )
+
     st.session_state.last_check = time.time()
     st.session_state.last_df = df
 
@@ -127,7 +222,22 @@ if st.session_state.last_df is not None:
     checked_at = datetime.fromtimestamp(st.session_state.last_check).strftime("%H:%M:%S")
     next_check = datetime.fromtimestamp(st.session_state.last_check + POLL_INTERVAL).strftime("%H:%M:%S")
     st.caption(f"Last checked: {checked_at} · Next check: {next_check}")
-    st.dataframe(st.session_state.last_df, use_container_width=True)
+
+    df = st.session_state.last_df.copy()
+
+    # Rename columns to include description
+    df.columns = [f"{c} — {descriptions.get(c, c)}" for c in df.columns]
+
+    # Sort: stores with any stock > 0 first, then alphabetical
+    df["_total"] = df.sum(axis=1)
+    df = df.sort_values("_total", ascending=False).drop(columns="_total")
+
+    # Display without scrolling — height based on row count
+    row_height = 35
+    header_height = 38
+    height = header_height + row_height * len(df)
+
+    st.dataframe(df, use_container_width=True, height=height)
 else:
     st.warning("No data returned.")
 
